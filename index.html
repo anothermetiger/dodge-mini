@@ -7,30 +7,100 @@
 <title>Dodge Mini</title>
 <style>
   html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
-  #hud{position:fixed;left:12px;top:8px;font-weight:700;z-index:2}
+  #hud{position:fixed;left:12px;top:8px;font-weight:700;z-index:3}
   #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:2}
   #msg{background:rgba(0,0,0,.6);padding:14px 18px;border-radius:12px;font-weight:700;text-align:center}
   canvas{display:block;width:100vw;height:100vh;touch-action:none}
+  #mute{position:fixed;right:10px;top:8px;z-index:3;background:#000a;border:1px solid #333;
+        color:#eee;padding:6px 10px;border-radius:10px;font-weight:700}
+  table{border-collapse:collapse;margin:8px auto}
+  td,th{border-bottom:1px solid #333;padding:4px 8px}
 </style>
+
+<!-- BGMファイル（任意）。同じフォルダに bgm.mp3 を置けば鳴ります -->
+<audio id="bgm" src="bgm.mp3" preload="auto" loop></audio>
+
 <canvas id="game"></canvas>
 <div id="hud">SCORE: <span id="score">0</span></div>
+<button id="mute">🔊</button>
 <div id="ui"><div id="msg">▶ タップで開始（スワイプで左右）</div></div>
+
 <script>
+/* ====== サイズ ====== */
 const c = document.getElementById('game'), x = c.getContext('2d');
 const ui = document.getElementById('ui'), msg=document.getElementById('msg'), scoreEl=document.getElementById('score');
-
+const muteBtn = document.getElementById('mute');
 let W=0,H=0, DPR=Math.min(2, window.devicePixelRatio||1);
 function resize(){ W=Math.floor(innerWidth*DPR); H=Math.floor(innerHeight*DPR); c.width=W; c.height=H; }
 addEventListener('resize', resize,{passive:true}); resize();
 
+/* ====== 状態 ====== */
 const S = {playing:false,over:false,t:0,score:0,speed:3, p:{x:0,y:0,w:60,h:14,vx:0}, obs:[]};
 
+/* ====== サウンド（iOS対応） ====== */
+const audio = {
+  ctx: null, gain: null, unlocked:false, muted:false,
+  init(){
+    if(this.unlocked) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = AC ? new AC() : null;
+    if(this.ctx){
+      this.gain = this.ctx.createGain();
+      this.gain.gain.value = 0.4;
+      this.gain.connect(this.ctx.destination);
+    }
+    // BGMは<audio>をWebAudioに通す（無ければスキップ）
+    const el = document.getElementById('bgm');
+    if(el && this.ctx){
+      try{
+        this.srcNode = this.ctx.createMediaElementSource(el);
+        this.srcNode.connect(this.gain);
+      }catch(e){}
+    }
+    this.unlocked = true;
+  },
+  playBGM(){
+    const el = document.getElementById('bgm');
+    if(!el) return; // bgm.mp3 が無い場合
+    if(this.muted) return;
+    // iOSはユーザー操作後に再生可能
+    const p = el.play();
+    if(p && p.catch){ p.catch(()=>{}); }
+  },
+  stopBGM(){ const el=document.getElementById('bgm'); if(el) el.pause(); },
+  blip(){ // 効果音（ファイル不要のピコッ）
+    if(!this.ctx || this.muted) return;
+    const o=this.ctx.createOscillator(), g=this.ctx.createGain();
+    o.type='square'; o.frequency.value=440;
+    g.gain.value=0.2; o.connect(g); g.connect(this.gain);
+    o.start();
+    // 50msで減衰
+    const t=this.ctx.currentTime;
+    g.gain.setValueAtTime(0.2,t);
+    g.gain.exponentialRampToValueAtTime(0.001, t+0.08);
+    o.stop(t+0.09);
+  }
+};
+
+muteBtn.addEventListener('click', ()=>{
+  audio.muted = !audio.muted;
+  muteBtn.textContent = audio.muted ? '🔈' : '🔊';
+  if(audio.muted) audio.stopBGM(); else audio.playBGM();
+});
+
+/* ====== 便利関数 ====== */
 function reset(){
   S.playing=false; S.over=false; S.t=0; S.score=0; S.speed=3;
   S.p.x=W/2-30; S.p.y=H-120; S.p.vx=0; S.obs=[]; scoreEl.textContent=0;
-  ui.style.display='flex'; msg.textContent='▶ タップで開始（スワイプで左右）';
+  ui.style.display='flex'; msg.innerHTML='▶ タップで開始（スワイプで左右）<br><small>初回タップで音が有効化されます</small>';
 }
-function start(){ if(S.playing) return; S.playing=true; ui.style.display='none'; }
+function start(){
+  if(S.playing) return;
+  // 最初のユーザー操作でAudioを解放＆BGM開始
+  audio.init();
+  if(!audio.muted) audio.playBGM();
+  S.playing=true; S.over=false; ui.style.display='none';
+}
 function rand(a,b){return Math.random()*(b-a)+a}
 function spawn(){
   const w=rand(40*DPR,120*DPR), gap=rand(120*DPR,220*DPR);
@@ -40,6 +110,7 @@ function spawn(){
 }
 function hit(a,b){return !(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y);}
 
+/* ====== 入力 ====== */
 let dragging=false, lastX=0;
 function ptr(e){return (e.touches? e.touches[0]:e);}
 c.addEventListener('touchstart', e=>{dragging=true; lastX=ptr(e).clientX; start();},{passive:true});
@@ -50,23 +121,46 @@ addEventListener('mouseup', ()=> dragging=false);
 addEventListener('mousemove', e=>{ if(!dragging) return; S.p.vx += (e.clientX-lastX)*0.35*DPR; lastX=e.clientX; });
 addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter') start(); });
 
+/* ====== 描画 ====== */
 function roundRect(x0,y0,w,h,r){ x.beginPath();
   x.moveTo(x0+r,y0); x.arcTo(x0+w,y0,x0+w,y0+h,r);
   x.arcTo(x0+w,y0+h,x0,y0+h,r); x.arcTo(x0,y0+h,x0,y0,r);
   x.arcTo(x0,y0,x0+w,y0,r); x.fill();
 }
-
 function draw(){
   x.clearRect(0,0,W,H);
   x.globalAlpha=.25; x.fillStyle='#0a0a0a';
   for(let y=0; y<H; y+=40*DPR){ x.fillRect(0,y,W,1); }
   x.globalAlpha=1;
-
   x.fillStyle='#6cf'; roundRect(S.p.x,S.p.y,S.p.w,S.p.h,6*DPR);
   x.fillStyle='#f66'; for(const o of S.obs) roundRect(o.x,o.y,o.w,o.h,4*DPR);
   x.fillStyle='#222'; x.fillRect(0,H-40*DPR,W,40*DPR);
 }
 
+/* ====== ローカルランキング ====== */
+const HS_KEY = 'dodgeMiniScores';
+function loadScores(){ try{return JSON.parse(localStorage.getItem(HS_KEY)||'[]')}catch(e){return []} }
+function saveScore(score,name){
+  const list = loadScores();
+  list.push({name,score,date:Date.now()});
+  list.sort((a,b)=>b.score-a.score);
+  const top = list.slice(0,10);
+  localStorage.setItem(HS_KEY, JSON.stringify(top));
+  return top;
+}
+function renderRanking(list, justScored){
+  let rows = list.map((r,i)=>{
+    const mark = (r===justScored) ? ' ←NEW' : '';
+    const n = (r.name||'YOU').slice(0,10);
+    return `<tr><td style="text-align:right;width:2em">${i+1}</td><td style="min-width:5em">${n}</td><td style="text-align:right">${r.score}</td><td style="opacity:.6">${new Date(r.date).toLocaleDateString()}</td><td>${mark}</td></tr>`;
+  }).join('');
+  if(!rows) rows = '<tr><td colspan="4">まだ記録なし</td></tr>';
+  return `<h3 style="margin:.2em 0">🏆 ハイスコア</h3>
+          <table><tr><th>#</th><th>NAME</th><th>SCORE</th><th>DATE</th><th></th></tr>${rows}</table>
+          <div style="opacity:.7">※この端末だけに保存されます</div>`;
+}
+
+/* ====== ループ ====== */
 function loop(){
   if(S.playing){
     S.t++; if(S.t%180===0) S.speed+=0.5;
@@ -76,14 +170,30 @@ function loop(){
     S.obs = S.obs.filter(o => o.y < H+40*DPR);
     S.score++; scoreEl.textContent=S.score;
     const p={x:S.p.x,y:S.p.y,w:S.p.w,h:S.p.h};
-    for(const o of S.obs){ if(hit(p,o)){ S.playing=false; S.over=true; ui.style.display='flex';
-      msg.innerHTML=`💥 GAME OVER<br>スコア: ${S.score}<br>タップで再開`; } }
+    for(const o of S.obs){
+      if(hit(p,o)){
+        S.playing=false; S.over=true;
+        audio.blip(); audio.stopBGM();
+        // 名前入力（端末に保存して次回も使う）
+        let name = localStorage.getItem('playerName') || '';
+        name = prompt('名前を入れてスコアを保存（未入力OK）', name || '') || (name || 'YOU');
+        localStorage.setItem('playerName', name);
+        const top = saveScore(S.score, name);
+        const just = top.find(r=>r.score===S.score && r.name===name);
+        ui.style.display='flex';
+        msg.innerHTML = `💥 GAME OVER<br>スコア: ${S.score}<br><br>${renderRanking(top, just)}<br>タップで再開`;
+        break;
+      }
+    }
   }
   draw(); requestAnimationFrame(loop);
 }
-ui.addEventListener('click', ()=> S.over ? reset(): start());
+
+/* ====== 起動 ====== */
+ui.addEventListener('click', ()=> S.over ? (reset(), (audio.muted?null:audio.playBGM())) : start());
 reset(); loop();
 
+/* ====== PWA: Service Worker ====== */
 if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js')); }
 </script>
 </html>
