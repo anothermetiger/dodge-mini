@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#111">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Dodge Mini</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
+  #hud{position:fixed;left:12px;top:8px;font-weight:700;z-index:2}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:2}
+  #msg{background:rgba(0,0,0,.6);padding:14px 18px;border-radius:12px;font-weight:700;text-align:center}
+  canvas{display:block;width:100vw;height:100vh;touch-action:none}
+</style>
+<canvas id="game"></canvas>
+<div id="hud">SCORE: <span id="score">0</span></div>
+<div id="ui"><div id="msg">▶ タップで開始（スワイプで左右）</div></div>
+<script>
+const c = document.getElementById('game'), x = c.getContext('2d');
+const ui = document.getElementById('ui'), msg=document.getElementById('msg'), scoreEl=document.getElementById('score');
+
+let W=0,H=0, DPR=Math.min(2, window.devicePixelRatio||1);
+function resize(){ W=Math.floor(innerWidth*DPR); H=Math.floor(innerHeight*DPR); c.width=W; c.height=H; }
+addEventListener('resize', resize,{passive:true}); resize();
+
+const S = {playing:false,over:false,t:0,score:0,speed:3, p:{x:0,y:0,w:60,h:14,vx:0}, obs:[]};
+
+function reset(){
+  S.playing=false; S.over=false; S.t=0; S.score=0; S.speed=3;
+  S.p.x=W/2-30; S.p.y=H-120; S.p.vx=0; S.obs=[]; scoreEl.textContent=0;
+  ui.style.display='flex'; msg.textContent='▶ タップで開始（スワイプで左右）';
+}
+function start(){ if(S.playing) return; S.playing=true; ui.style.display='none'; }
+function rand(a,b){return Math.random()*(b-a)+a}
+function spawn(){
+  const w=rand(40*DPR,120*DPR), gap=rand(120*DPR,220*DPR);
+  const left=rand(10*DPR, W-w-gap-10*DPR);
+  S.obs.push({x:0,y:-20*DPR,w:left,h:20*DPR});
+  S.obs.push({x:left+gap,y:-20*DPR,w:W-(left+gap),h:20*DPR});
+}
+function hit(a,b){return !(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y);}
+
+let dragging=false, lastX=0;
+function ptr(e){return (e.touches? e.touches[0]:e);}
+c.addEventListener('touchstart', e=>{dragging=true; lastX=ptr(e).clientX; start();},{passive:true});
+c.addEventListener('touchend',   ()=> dragging=false,{passive:true});
+c.addEventListener('touchmove',  e=>{ if(!dragging) return; const nx=ptr(e).clientX; S.p.vx += (nx-lastX)*0.4*DPR; lastX=nx; },{passive:true});
+c.addEventListener('mousedown', e=>{dragging=true; lastX=e.clientX; start();});
+addEventListener('mouseup', ()=> dragging=false);
+addEventListener('mousemove', e=>{ if(!dragging) return; S.p.vx += (e.clientX-lastX)*0.35*DPR; lastX=e.clientX; });
+addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter') start(); });
+
+function roundRect(x0,y0,w,h,r){ x.beginPath();
+  x.moveTo(x0+r,y0); x.arcTo(x0+w,y0,x0+w,y0+h,r);
+  x.arcTo(x0+w,y0+h,x0,y0+h,r); x.arcTo(x0,y0+h,x0,y0,r);
+  x.arcTo(x0,y0,x0+w,y0,r); x.fill();
+}
+
+function draw(){
+  x.clearRect(0,0,W,H);
+  x.globalAlpha=.25; x.fillStyle='#0a0a0a';
+  for(let y=0; y<H; y+=40*DPR){ x.fillRect(0,y,W,1); }
+  x.globalAlpha=1;
+
+  x.fillStyle='#6cf'; roundRect(S.p.x,S.p.y,S.p.w,S.p.h,6*DPR);
+  x.fillStyle='#f66'; for(const o of S.obs) roundRect(o.x,o.y,o.w,o.h,4*DPR);
+  x.fillStyle='#222'; x.fillRect(0,H-40*DPR,W,40*DPR);
+}
+
+function loop(){
+  if(S.playing){
+    S.t++; if(S.t%180===0) S.speed+=0.5;
+    S.p.vx*=0.92; S.p.x = Math.max(10*DPR, Math.min(W-10*DPR-S.p.w, S.p.x+S.p.vx));
+    if(S.t%45===0) spawn();
+    for(const o of S.obs) o.y += S.speed*DPR;
+    S.obs = S.obs.filter(o => o.y < H+40*DPR);
+    S.score++; scoreEl.textContent=S.score;
+    const p={x:S.p.x,y:S.p.y,w:S.p.w,h:S.p.h};
+    for(const o of S.obs){ if(hit(p,o)){ S.playing=false; S.over=true; ui.style.display='flex';
+      msg.innerHTML=`💥 GAME OVER<br>スコア: ${S.score}<br>タップで再開`; } }
+  }
+  draw(); requestAnimationFrame(loop);
+}
+ui.addEventListener('click', ()=> S.over ? reset(): start());
+reset(); loop();
+
+if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js')); }
+</script>
+</html>
